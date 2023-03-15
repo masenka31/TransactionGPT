@@ -1,0 +1,13 @@
+name = "TransactionGPT"
+uuid = "f05b125b-8877-4be8-8e06-4409d9000650"
+authors = ["masenka31 <masenka.maskova@gmail.com> and contributors"]
+version = "1.0.0-DEV"
+
+[compat]
+julia = "1.8"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
