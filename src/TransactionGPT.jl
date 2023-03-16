@@ -1,5 +1,7 @@
 module TransactionGPT
 
-# Write your package code here.
+export load_czech_banking_dataset
+
+include("czech_banking_dataset.jl")
 
 end

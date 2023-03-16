@@ -1,1 +1,4 @@
 /Manifest.toml
+/data/czech_banking_dataset
+*.csv
+.DS_Store
