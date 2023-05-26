@@ -218,12 +218,12 @@ class TransactionDataset(Dataset):
 ### Functions ###
 
 def fit_onehot_encoders(data):
-    oh_customer_state = OneHotEncoder(min_frequency=1, sparse_output=False)
-    oh_merchant_state = OneHotEncoder(min_frequency=5, sparse_output=False)
-
+    oh_customer_state = OneHotEncoder(min_frequency=1, sparse_output=False, handle_unknown='infrequent_if_exist')
+    oh_merchant_state = OneHotEncoder(min_frequency=5, sparse_output=False, handle_unknown='infrequent_if_exist')
+    
     oh_customer_state.fit(np.array(data['customer.state']).reshape(-1,1))
     oh_merchant_state.fit(np.array(data['merchant.state']).reshape(-1,1))
-
+    
     return oh_customer_state, oh_merchant_state
 
 def train_val_test_indexes(data):
@@ -285,11 +285,12 @@ class CustomDataset(Dataset):
         return x, y
     
 class CustomUpsampleDataset(Dataset):
-    def __init__(self, dataset, pidx, nidx, length):
+    def __init__(self, dataset, pidx, nidx, length, threshold=0.5):
         self.dataset = dataset
         self.positive_idx = pidx
         self.negative_idx = nidx
         self.length = length
+        self.threshold = threshold
 
     def __len__(self):
         return self.length
@@ -297,7 +298,7 @@ class CustomUpsampleDataset(Dataset):
     def __getitem__(self, idx):
 
         while True:
-            if random.random() > 0.5:
+            if random.random() > self.threshold:
                 idx = random.sample(list(self.positive_idx.keys()), 1)[0]
                 i = random.sample(list(self.positive_idx[idx]), 1)[0]
                 t = self.dataset.get_group_by_label(idx, i)
