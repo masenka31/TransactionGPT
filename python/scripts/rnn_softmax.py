@@ -122,11 +122,12 @@ def train(model, optimizer, train_dataset, parameters, num_epochs, train_losses,
         train_loader = DataLoader(tmp, batch_size=parameters.batch_size, shuffle=True)
 
         for inputs, labels in train_loader:
-            if type(last_inputs) != int:
-                inputs, labels = enhance_minibatch(model, last_inputs, last_labels, inputs, labels)
+            if parameters.enhance:
+                if type(last_inputs) != int:
+                    inputs, labels = enhance_minibatch(model, last_inputs, last_labels, inputs, labels)
 
-            last_inputs = inputs.to(torch.device("cpu")).clone()
-            last_labels = labels.to(torch.device("cpu")).clone()
+                last_inputs = inputs.to(torch.device("cpu")).clone()
+                last_labels = labels.to(torch.device("cpu")).clone()
 
             inputs = inputs.to(device)
             labels = labels.long().to(device)
@@ -157,7 +158,7 @@ def train(model, optimizer, train_dataset, parameters, num_epochs, train_losses,
 
 
 #  TODO: validation early stopping?
-num_epochs = 10
+num_epochs = 300
 train(model, optimizer, train_dataset, parameters, num_epochs, train_losses, train_accuracies, device = device)
 
 # Calculate the predictions

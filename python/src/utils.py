@@ -20,12 +20,13 @@ class Hyperparameters():
         self.ratio = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9]
         self.upsampling_threshold = [0.1, 0.25, 0.5, 0.75, 0.9]
         self.batch_size = [16, 32, 64, 128]
+        self.enhance = [True, False]
 
     def sample_hyperparameters(self):
         if self.seed is not None:
             random.seed(self.seed)
 
-        Sample = namedtuple('Sample', ['hidden_size', 'num_layers', 'bidirectional', 'learning_rate', 'ratio', 'upsampling_threshold', 'batch_size'])
+        Sample = namedtuple('Sample', ['hidden_size', 'num_layers', 'bidirectional', 'learning_rate', 'ratio', 'upsampling_threshold', 'batch_size', 'enhance'])
 
         hidden_size = random.choice(self.hidden_size)
         num_layers = random.choice(self.num_layers)
@@ -34,8 +35,9 @@ class Hyperparameters():
         ratio = random.choice(self.ratio)
         upsampling_threshold = random.choice(self.upsampling_threshold)
         batch_size = random.choice(self.batch_size)
+        enhance = random.choice(self.enhance)
 
-        return Sample(hidden_size, num_layers, bidirectional, learning_rate, ratio, upsampling_threshold, batch_size)
+        return Sample(hidden_size, num_layers, bidirectional, learning_rate, ratio, upsampling_threshold, batch_size, enhance)
 
 
 def get_binary_predictions(model, dataset, break_at=100):
