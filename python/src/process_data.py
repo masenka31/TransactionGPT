@@ -40,7 +40,7 @@ class IBMDataset:
             'merchant.name': transactions['Merchant Name'],
             'merchant.city': transactions['Merchant City'],
             'merchant.state': transactions['Merchant State'],
-            # 'card.mcc': transactions['MCC'],
+            'card.mcc': transactions['MCC'],
             'is_fraud': transactions["Is Fraud?"],
             'age': transactions['Current Age'],
             'chip': transactions['Use Chip'],
@@ -132,12 +132,13 @@ def convert_time_features(df, datetime_column_name = 'datetime'):
     return time_features
 
 class TransactionDataset(Dataset):
-    def __init__(self, gdf, oh_c, oh_m, seq_length):
+    def __init__(self, gdf, oh_c, oh_m, oh_mcc, seq_length):
         self.gdf = gdf
         self.len = len(gdf)
         self.groups = list(gdf.groups)
         self.oh_customer_state = oh_c
         self.oh_merchant_state = oh_m
+        self.oh_mcc = oh_mcc
         self.seq_length = seq_length
 
     def __len__(self):
@@ -200,6 +201,7 @@ class TransactionDataset(Dataset):
         
         customer_state = self.oh_customer_state.transform(np.array(g['customer.state']).reshape(-1,1))
         merchant_state = self.oh_merchant_state.transform(np.array(g['merchant.state']).reshape(-1,1))
+        mcc = self.oh_mcc.transform(np.array(g['card.mcc']).reshape(-1,1))
 
         Fnum = np.array(g[['age', 'num_cards', 'log_amount', 'log_timediff', 'latitude', 'longitude']], dtype=float)
         if len(Fnum.shape) == 1:
@@ -208,7 +210,7 @@ class TransactionDataset(Dataset):
         Fcat = np.vstack((debt, limit, direction, brand, gender, same_city, same_state, known_merchant)).transpose()
         Fdatetime = convert_time_features(g, 'date')
 
-        F = np.hstack((customer_state, merchant_state, Fnum, Fcat, Fdatetime))
+        F = np.hstack((customer_state, merchant_state, mcc, Fnum, Fcat, Fdatetime))
 
         # get the label of the last transaction in the sequence
         label = np.array(g.iloc[-1]['is_fraud'] == 'Yes', dtype=float)
@@ -220,24 +222,26 @@ class TransactionDataset(Dataset):
 def fit_onehot_encoders(data):
     oh_customer_state = OneHotEncoder(min_frequency=1, sparse_output=False, handle_unknown='infrequent_if_exist')
     oh_merchant_state = OneHotEncoder(min_frequency=5, sparse_output=False, handle_unknown='infrequent_if_exist')
+    oh_mcc = OneHotEncoder(min_frequency=5, sparse_output=False, handle_unknown='infrequent_if_exist')
     
     oh_customer_state.fit(np.array(data['customer.state']).reshape(-1,1))
     oh_merchant_state.fit(np.array(data['merchant.state']).reshape(-1,1))
+    oh_mcc.fit(np.array(data['card.mcc']).reshape(-1,1))
     
-    return oh_customer_state, oh_merchant_state
+    return oh_customer_state, oh_merchant_state, oh_mcc
 
-def train_val_test_indexes(data):
+def train_val_test_indexes(data, random_state: int):
     # Split indexes by customers
     grouped_df = data.groupby('customer.id')
     groups = np.array(list(grouped_df.groups))
 
     index_list = list(range(len(groups)))
-    tmp, _test_ix = train_test_split(index_list, test_size=0.2, random_state=31)
-    _train_ix, _val_ix = train_test_split(tmp, test_size=0.3, random_state=31)
+    tmp, _test_ix = train_test_split(index_list, test_size=0.2, random_state=random_state)
+    _train_ix, _val_ix = train_test_split(tmp, test_size=0.3, random_state=random_state)
 
-    print(len(_train_ix))
-    print(len(_val_ix))
-    print(len(_test_ix))
+    # print(len(_train_ix))
+    # print(len(_val_ix))
+    # print(len(_test_ix))
 
     train_ix = []
     val_ix = []
@@ -260,14 +264,14 @@ def train_val_test_indexes(data):
 
     return train_ix, val_ix, test_ix
 
-def train_val_test_datasets(data, train_ix, val_ix, test_ix, oh_customer_state, oh_merchant_state):
+def train_val_test_datasets(data, train_ix, val_ix, test_ix, oh_customer_state, oh_merchant_state, oh_mcc):
     train_data = data.loc[train_ix]
     val_data = data.loc[val_ix]
     test_data = data.loc[test_ix]
 
-    train_dataset = TransactionDataset(train_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, 10)
-    val_dataset = TransactionDataset(val_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, 10)
-    test_dataset = TransactionDataset(test_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, 10)
+    train_dataset = TransactionDataset(train_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, 10)
+    val_dataset = TransactionDataset(val_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, 10)
+    test_dataset = TransactionDataset(test_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, 10)
 
     return train_dataset, val_dataset, test_dataset
 
@@ -285,6 +289,11 @@ class CustomDataset(Dataset):
         return x, y
     
 class CustomUpsampleDataset(Dataset):
+    """
+    Returns a dataset with upsampling.
+
+    :threshold - the approximate ratio of positive samples
+    """
     def __init__(self, dataset, pidx, nidx, length, threshold=0.5):
         self.dataset = dataset
         self.positive_idx = pidx
