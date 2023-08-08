@@ -1,12 +1,15 @@
 import random
 import numpy as np
 import pandas as pd
+from datetime import timedelta
 from datetime import datetime
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
+from collections import defaultdict
+from collections import deque
 
 class IBMDataset:
 
@@ -63,39 +66,52 @@ class IBMDataset:
 
         return df
     
-    def process_dataset(self):
-        print('Loading the data...')
-        df = self.ibm_credit_card()
-        print('Data loaded.')
+    def process_dataset(self, *, use_cached=True, save_if_not_cached=False):
+        if use_cached:
+            data = pd.read_csv("data/processed.zip")
+            print("Data loaded from file.")
+        else:
+            print('Loading the data...')
+            df = self.ibm_credit_card()
+            print('Data loaded.')
 
-        print('Processing data with new columns...')
-        gdf = df.groupby('customer.id')
+            print('Processing data with new columns...')
+            gdf = df.groupby('customer.id')
 
-        new_groups = []
-        for _, group in tqdm(gdf):
-            # figure out known merchants
-            known_merchants = group['merchant.name'].duplicated().astype(int)
-            
-            # create a copy of the group
-            g_new = group.copy()
-            g_new['is_known_merchant'] = known_merchants
-            
-            # time difference for the customer
-            g_new['log_timediff'] = np.log(1 + g_new['date'].diff().dt.seconds).fillna(0)
-            
-            # customer address and merchant address
-            g_new['same_city'] = (group['merchant.city'] == group['customer.city'])
-            g_new['same_state'] = (group['merchant.state'] == group['customer.state'])
-            
-            new_groups.append(g_new)
+            new_groups = []
+            for _, group in tqdm(gdf):
+                # figure out known merchants
+                known_merchants = group['merchant.name'].duplicated().astype(int)
+    
+                # create a copy of the group
+                g_new = group.copy()
+                g_new['is_known_merchant'] = known_merchants
 
-        data = pd.concat(objs=new_groups)
+                # create a new column for the number of times the merchant / MCC was seen in the last 2, 7, 30 days
+                N_days = [2, 7, 30]
+                for N in N_days:
+                    g_new[f'seen_count_last_{N}_days'] = seen_count_last_N_days(g_new, N)
+                    g_new[f'seen_count_mcc_last_{N}_days'] = seen_count_mcc_last_N_days(g_new, N)
 
-        print('Data processed and concatenated.')
+                # time difference for the customer
+                g_new['log_timediff'] = np.log(1 + g_new['date'].diff().dt.seconds).fillna(0)
+                
+                # customer address and merchant address
+                g_new['same_city'] = (group['merchant.city'] == group['customer.city'])
+                g_new['same_state'] = (group['merchant.state'] == group['customer.state'])
+                
+                new_groups.append(g_new)
+
+            data = pd.concat(objs=new_groups)
+
+            if save_if_not_cached:
+                data.to_csv("data/processed.zip")
+
+            print('Data processed and concatenated.')
         
         return data
 
-def convert_time_features(df, datetime_column_name = 'datetime'):
+def convert_time_features(df, datetime_column_name = 'datetime', datetime_format="%Y-%m-%d %H:%M:%S"):
     """
 	Converts `datetime_column_name` from DataFrame to 2D sin/cos encoded
 	numerical features. Encodes
@@ -110,7 +126,7 @@ def convert_time_features(df, datetime_column_name = 'datetime'):
 	"""
 
     # Convert the date column to datetime objects
-    dates = pd.to_datetime(df[datetime_column_name])
+    dates = pd.to_datetime(df[datetime_column_name], format=datetime_format)
 
     # Calculate the angles for each time feature
     day_of_week_angle = 2 * np.pi * dates.dt.dayofweek / 7
@@ -132,13 +148,14 @@ def convert_time_features(df, datetime_column_name = 'datetime'):
     return time_features
 
 class TransactionDataset(Dataset):
-    def __init__(self, gdf, oh_c, oh_m, oh_mcc, seq_length):
+    def __init__(self, gdf, oh_c, oh_m, oh_mcc, oh_chip, seq_length):
         self.gdf = gdf
         self.len = len(gdf)
         self.groups = list(gdf.groups)
         self.oh_customer_state = oh_c
         self.oh_merchant_state = oh_m
         self.oh_mcc = oh_mcc
+        self.oh_chip = oh_chip
         self.seq_length = seq_length
 
     def __len__(self):
@@ -178,7 +195,7 @@ class TransactionDataset(Dataset):
 
         # process values and labels
         processed, _ = self.process_rows(g)
-        labels = np.array(g['is_fraud'] == 'Yes', dtype=float)
+        labels = np.array(g['label'] == 1, dtype=float)
 
         max_len = processed.shape[0]
         sequences = [processed[start_ix:start_ix+self.seq_length] for start_ix in range(max_len - self.seq_length + 1)]
@@ -186,7 +203,6 @@ class TransactionDataset(Dataset):
         labels = np.hstack([labels[start_ix + self.seq_length - 1] for start_ix in range(max_len - self.seq_length + 1)])
         
         return sequences, labels
-
     
     def process_rows(self, g):
         # process the data
@@ -198,22 +214,36 @@ class TransactionDataset(Dataset):
         known_merchant = np.array(g['is_known_merchant'], dtype=float)
         debt = np.array(np.log(1 + g['total_debt']), dtype=float)
         limit = np.array(np.log(1 + g['credit_limit']), dtype=float)
+
+        ms2 = np.array(np.log(1 + g['seen_count_last_2_days']), dtype=float)
+        ms7 = np.array(np.log(1 + g['seen_count_last_7_days']), dtype=float)
+        ms30 = np.array(np.log(1 + g['seen_count_last_30_days']), dtype=float)
+
+        mcc2 = np.array(np.log(1 + g['seen_count_mcc_last_2_days']), dtype=float)
+        mcc7 = np.array(np.log(1 + g['seen_count_mcc_last_7_days']), dtype=float)
+        mcc30 = np.array(np.log(1 + g['seen_count_mcc_last_30_days']), dtype=float)
         
         customer_state = self.oh_customer_state.transform(np.array(g['customer.state']).reshape(-1,1))
         merchant_state = self.oh_merchant_state.transform(np.array(g['merchant.state']).reshape(-1,1))
         mcc = self.oh_mcc.transform(np.array(g['card.mcc']).reshape(-1,1))
+        chip = self.oh_chip.transform(np.array(g['chip']).reshape(-1,1))
 
         Fnum = np.array(g[['age', 'num_cards', 'log_amount', 'log_timediff', 'latitude', 'longitude']], dtype=float)
         if len(Fnum.shape) == 1:
             Fnum = Fnum.reshape(-1,1).transpose()
-            
-        Fcat = np.vstack((debt, limit, direction, brand, gender, same_city, same_state, known_merchant)).transpose()
+        
+        Fcat = np.vstack(
+            (
+                debt, limit, direction, brand, gender, same_city, same_state, known_merchant,
+                ms2, ms7, ms30, mcc2, mcc7, mcc30
+            )
+        ).transpose()
         Fdatetime = convert_time_features(g, 'date')
 
-        F = np.hstack((customer_state, merchant_state, mcc, Fnum, Fcat, Fdatetime))
+        F = np.hstack((customer_state, merchant_state, mcc, chip, Fnum, Fcat, Fdatetime))
 
         # get the label of the last transaction in the sequence
-        label = np.array(g.iloc[-1]['is_fraud'] == 'Yes', dtype=float)
+        label = np.array(g.iloc[-1]['label'] == 1, dtype=float)
 
         return np.array(F, dtype=float), label
 
@@ -223,12 +253,14 @@ def fit_onehot_encoders(data):
     oh_customer_state = OneHotEncoder(min_frequency=1, sparse_output=False, handle_unknown='infrequent_if_exist')
     oh_merchant_state = OneHotEncoder(min_frequency=5, sparse_output=False, handle_unknown='infrequent_if_exist')
     oh_mcc = OneHotEncoder(min_frequency=5, sparse_output=False, handle_unknown='infrequent_if_exist')
+    oh_chip = OneHotEncoder(min_frequency=5, sparse_output=False, handle_unknown='infrequent_if_exist')
     
     oh_customer_state.fit(np.array(data['customer.state']).reshape(-1,1))
     oh_merchant_state.fit(np.array(data['merchant.state']).reshape(-1,1))
     oh_mcc.fit(np.array(data['card.mcc']).reshape(-1,1))
+    oh_chip.fit(np.array(data['chip']).reshape(-1,1))
     
-    return oh_customer_state, oh_merchant_state, oh_mcc
+    return oh_customer_state, oh_merchant_state, oh_mcc, oh_chip
 
 def train_val_test_indexes(data, random_state: int):
     # Split indexes by customers
@@ -238,10 +270,6 @@ def train_val_test_indexes(data, random_state: int):
     index_list = list(range(len(groups)))
     tmp, _test_ix = train_test_split(index_list, test_size=0.2, random_state=random_state)
     _train_ix, _val_ix = train_test_split(tmp, test_size=0.3, random_state=random_state)
-
-    # print(len(_train_ix))
-    # print(len(_val_ix))
-    # print(len(_test_ix))
 
     train_ix = []
     val_ix = []
@@ -264,14 +292,14 @@ def train_val_test_indexes(data, random_state: int):
 
     return train_ix, val_ix, test_ix
 
-def train_val_test_datasets(data, train_ix, val_ix, test_ix, oh_customer_state, oh_merchant_state, oh_mcc):
+def train_val_test_datasets(data, train_ix, val_ix, test_ix, oh_customer_state, oh_merchant_state, oh_mcc, oh_chip):
     train_data = data.loc[train_ix]
     val_data = data.loc[val_ix]
     test_data = data.loc[test_ix]
 
-    train_dataset = TransactionDataset(train_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, 10)
-    val_dataset = TransactionDataset(val_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, 10)
-    test_dataset = TransactionDataset(test_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, 10)
+    train_dataset = TransactionDataset(train_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, oh_chip, 10)
+    val_dataset = TransactionDataset(val_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, oh_chip, 10)
+    test_dataset = TransactionDataset(test_data.groupby('customer.id'), oh_customer_state, oh_merchant_state, oh_mcc, oh_chip, 10)
 
     return train_dataset, val_dataset, test_dataset
 
@@ -332,8 +360,8 @@ def positive_negative_indexes(train_data):
     pos_idx = {}
     neg_idx = {}
     for cid, group in train_data.groupby('customer.id'):
-        p = group[group['is_fraud'] == 'Yes'].index
-        n = group[group['is_fraud'] == 'No'].index
+        p = group[group['label'] == 1].index
+        n = group[group['label'] == 0].index
 
         if len(p) > 0:
             pos_idx[cid] = p
@@ -342,3 +370,42 @@ def positive_negative_indexes(train_data):
 
     return pos_idx, neg_idx
 
+def seen_count_last_N_days(group, N):
+    seen_dates = defaultdict(deque)
+    result = []
+    
+    for i, row in group.iterrows():
+        name = row['merchant.name']
+        date = row['date']
+        
+        # remove transactions that are older than N days
+        while seen_dates[name] and date - seen_dates[name][0] > timedelta(days=N):
+            seen_dates[name].popleft()
+        
+        # append the current transaction
+        seen_dates[name].append(date)
+        
+        # the count is the number of remaining transactions
+        result.append(len(seen_dates[name]) - 1)
+        
+    return pd.Series(result, index=group.index)
+
+def seen_count_mcc_last_N_days(group, N):
+    seen_dates = defaultdict(deque)
+    result = []
+    
+    for i, row in group.iterrows():
+        name = row['card.mcc']
+        date = row['date']
+        
+        # remove transactions that are older than N days
+        while seen_dates[name] and date - seen_dates[name][0] > timedelta(days=N):
+            seen_dates[name].popleft()
+        
+        # append the current transaction
+        seen_dates[name].append(date)
+        
+        # the count is the number of remaining transactions
+        result.append(len(seen_dates[name]) - 1)
+        
+    return pd.Series(result, index=group.index)

@@ -44,8 +44,8 @@ train_data = data.loc[train_ix]
 val_data = data.loc[val_ix]
 test_data = data.loc[test_ix]
 
-oh_customer_state, oh_merchant_state, oh_mcc = fit_onehot_encoders(train_data)
-train_dataset, val_dataset, test_dataset = train_val_test_datasets(data, train_ix, val_ix, test_ix, oh_customer_state, oh_merchant_state, oh_mcc)
+oh_customer_state, oh_merchant_state, oh_mcc, oh_chip = fit_onehot_encoders(train_data)
+train_dataset, val_dataset, test_dataset = train_val_test_datasets(data, train_ix, val_ix, test_ix, oh_customer_state, oh_merchant_state, oh_mcc, oh_chip)
 
 pos_idx, neg_idx = positive_negative_indexes(train_data)
 
@@ -94,7 +94,7 @@ test_loader = DataLoader(tmp3, batch_size=parameters.batch_size, shuffle=False)
 
 # Test that it works
 
-for inputs, labels in train_upsample_loader:
+for inputs, labels in train_loader:
     break
 
 out = model(inputs.to(device))
@@ -158,7 +158,7 @@ def train(model, optimizer, train_dataset, parameters, num_epochs, train_losses,
 
 
 #  TODO: validation early stopping?
-num_epochs = 300
+num_epochs = 10
 train(model, optimizer, train_dataset, parameters, num_epochs, train_losses, train_accuracies, device = device)
 
 # Calculate the predictions
